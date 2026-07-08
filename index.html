@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Flappy Bird · clone</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+    body {
+      background: #2d2d2d;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+      touch-action: manipulation;
+    }
+    .game-wrapper {
+      background: #1a1a2e;
+      border-radius: 28px;
+      padding: 12px;
+      box-shadow: 0 20px 30px rgba(0,0,0,0.6);
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      height: auto;
+      aspect-ratio: 400 / 600;
+      background: #70c5ce;
+      border-radius: 20px;
+      box-shadow: inset 0 0 0 2px #3e6b7a;
+      touch-action: none;
+      cursor: pointer;
+      image-rendering: crisp-edges; 
+    }
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0,0,0,0);
+      border: 0;
+    }
+    @media (max-width: 480px) {
+      .game-wrapper { padding: 6px; border-radius: 18px; }
+    }
+  </style>
+</head>
+<body>
+<div class="game-wrapper">
+  <canvas id="gameCanvas" width="400" height="600" aria-label="Flappy Bird game"></canvas>
+</div>
+
+<script>
+  (function() {
+    // ---------- GAME VARIABLES ----------
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const W = 400, H = 600;
+
+    // Game state
+    let state = 'LOADING'; // LOADING, START, PLAY, GAMEOVER
+    let score = 0;
+    let bestScore = parseInt(localStorage.getItem('flappyBest') || '0', 10);
+    let gameSpeed = 2.6;
+    let baseGap = 150;
+    let frame = 0;
+    let screenShake = 0;
+    let flashAlpha = 0;
+    let particles = [];
+    let floatingScores = [];
+
+    // Bird
+    const bird = {
+      x: 70, y: 280, w: 34, h: 26,
+      vy: 0, gravity: 0.25, jumpPower: -5.2,
+      rotation: 0, frame: 0,
+      flapTimer: 0
+    };
+
+    // Pipes
+    let pipes = [];
+    const PIPE_W = 48;
+    const PIPE_SPAWN_INTERVAL = 100;
+    let pipeCounter = 0;
+
+    // Audio & assets
+    const assets = {
+      images: {},
+      sounds: {}
+    };
+    let assetsLoaded = 0;
+    const totalAssets = 10; // 5 images + 5 sounds (bgm, wing, score, hit, gameover)
+
+    // UI flags
+    let muted = false;
+    let paused = false;
+    let isGameOver = false;
+    let startTrigger = false;
+
+    // ---------- ASSET LOADER ----------
+    function loadAssets() {
+      const imageMap = {
+        background: 'assets/background.png',
+        bird: 'assets/bird.png',
+        pillarTop: 'assets/pillar-top.png',
+        pillarBottom: 'assets/pillar-bottom.png',
+        restart: 'assets/restart.png'
+      };
+      const soundMap = {
+        bgm: 'assets/bgm.mp3',
+        wing: 'assets/wing.wav',
+        score: 'assets/score.wav',
+        hit: 'assets/hit.wav',
+        gameover: 'assets/gameover.wav'
+      };
+
+      let loaded = 0;
+      function onLoad() {
+        loaded++;
+        assetsLoaded = loaded;
+        if (loaded === totalAssets) {
+          state = 'START';
+          // pre-warm audio
+          Object.values(assets.sounds).forEach(s => s && s.load && s.load());
+        }
+      }
+
+      // Images
+      for (const [key, src] of Object.entries(imageMap)) {
+        const img = new Image();
+        img.onload = () => { assets.images[key] = img; onLoad(); };
+        img.onerror = () => { console.warn('Failed to load', src); onLoad(); };
+        img.src = src;
+      }
+
+      // Sounds
+      for (const [key, src] of Object.entries(soundMap)) {
+        const audio = new Audio(src);
+        audio.preload = 'auto';
+        audio.oncanplaythrough = () => { onLoad(); };
+        audio.onerror = () => { console.warn('Sound error', src); onLoad(); };
+        assets.sounds[key] = audio;
+      }
+    }
+
+    // ---------- AUDIO MANAGER ----------
+    function playSound(key) {
+      if (muted) return;
+      const s = assets.sounds[key];
+      if (!s) return;
+      try {
+        const clone = s.cloneNode();
+        clone.volume = (key === 'bgm') ? 0.3 : 0.6;
+        clone.play().catch(e => {});
+        if (key === 'bgm') {
+          clone.loop = true;
+          // store reference to avoid garbage
+          if (window._bgmRef) window._bgmRef.pause();
+          window._bgmRef = clone;
+        }
+      } catch (e) {}
+    }
+
+    function toggleMute() {
+      muted = !muted;
+      if (muted && window._bgmRef) {
+        window._bgmRef.pause();
+      } else if (!muted && state === 'PLAY') {
+        playSound('bgm');
+      }
+    }
+
+    // ---------- INPUT SYSTEM ----------
+    function handleTap(e) {
+      if (e) e.preventDefault();
+      if (state === 'LOADING') return;
+      if (state === 'GAMEOVER') {
+        restartGame();
+        return;
+      }
+      if (state === 'START') {
+        startGame();
+        return;
+      }
+      if (state === 'PLAY' && !paused) {
+        flapBird();
+      }
+    }
+
+    // Keyboard
+    document.addEventListener('keydown', (e) => {
+      if (e.key === ' ' || e.key === 'Space') {
+        e.preventDefault();
+        handleTap(e);
+      }
+      if (e.key === 'Enter' && state === 'GAMEOVER') {
+        e.preventDefault();
+        restartGame();
+      }
+      if (e.key === 'p' || e.key === 'P') {
+        if (state === 'PLAY') paused = !paused;
+      }
+      if (e.key === 'm' || e.key === 'M') toggleMute();
+    });
+
+    canvas.addEventListener('click', handleTap);
+    canvas.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      handleTap(e);
+    }, { passive: false });
+
+    // ---------- PHYSICS & BIRD ----------
+    function flapBird() {
+      bird.vy = bird.jumpPower;
+      bird.rotation = -25 * Math.PI / 180;
+      playSound('wing');
+    }
+
+    function updateBird() {
+      if (paused || state !== 'PLAY') return;
+      bird.vy += bird.gravity;
+      bird.y += bird.vy;
+
+      // rotation
+      if (bird.vy < -0.5) {
+        bird.rotation += (-25 * Math.PI/180 - bird.rotation) * 0.12;
+      } else {
+        bird.rotation += (70 * Math.PI/180 - bird.rotation) * 0.06;
+      }
+      // boundary (top/bottom)
+      if (bird.y < -10) bird.y = -10;
+      if (bird.y + bird.h > H - 10) {
+        bird.y = H - 10 - bird.h;
+        if (state === 'PLAY') gameOver();
+      }
+    }
+
+    // ---------- PIPES ----------
+    function spawnPipe() {
+      const minY = 60;
+      const maxY = H - 60 - baseGap;
+      const topHeight = Math.floor(Math.random() * (maxY - minY + 1)) + minY;
+      pipes.push({
+        x: W + 20,
+        topHeight: topHeight,
+        scored: false
+      });
+    }
+
+    function updatePipes() {
+      if (paused || state !== 'PLAY') return;
+      pipeCounter++;
+      if (pipeCounter >= PIPE_SPAWN_INTERVAL) {
+        pipeCounter = 0;
+        spawnPipe();
+      }
+
+      for (let i = pipes.length - 1; i >= 0; i--) {
+        const p = pipes[i];
+        p.x -= gameSpeed;
+
+        // collision detection (simple box)
+        if (!p.scored && p.x + PIPE_W < bird.x) {
+          p.scored = true;
+          score++;
+          playSound('score');
+          floatingScores.push({ x: bird.x + 20, y: bird.y - 10, life: 40 });
+          // increase difficulty
+          if (score % 10 === 0) {
+            gameSpeed = Math.min(gameSpeed + 0.2, 5.5);
+            baseGap = Math.max(baseGap - 4, 110);
+          }
+        }
+
+        // collision with bird
+        const birdBox = {
+          x: bird.x + 4, y: bird.y + 4,
+          w: bird.w - 8, h: bird.h - 8
+        };
+        // top pipe
+        const topBox = { x: p.x, y: 0, w: PIPE_W, h: p.topHeight };
+        // bottom pipe
+        const bottomBox = { x: p.x, y: p.topHeight + baseGap, w: PIPE_W, h: H - p.topHeight - baseGap };
+
+        if (boxCollide(birdBox, topBox) || boxCollide(birdBox, bottomBox)) {
+          gameOver();
+          return;
+        }
+
+        // remove offscreen
+        if (p.x + PIPE_W < -20) {
+          pipes.splice(i, 1);
+        }
+      }
+    }
+
+    function boxCollide(a, b) {
+      return a.x < b.x + b.w && a.x + a.w > b.x &&
+             a.y < b.y + b.h && a.y + a.h > b.y;
+    }
+
+    // ---------- PARTICLES & FLOATING SCORE ----------
+    function spawnParticles(x, y) {
+      for (let i = 0; i < 12; i++) {
+        particles.push({
+          x, y,
+          vx: (Math.random() - 0.5) * 5,
+          vy: (Math.random() - 0.5) * 5 - 1,
+          life: 30 + Math.random() * 20,
+          size: 3 + Math.random() * 4,
+          color: `hsl(${40 + Math.random()*30}, 70%, 60%)`
+        });
+      }
+    }
+
+    function updateParticles() {
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        p.vy += 0.08;
+        p.life--;
+        if (p.life <= 0) particles.splice(i, 1);
+      }
+      // floating scores
+      for (let i = floatingScores.length - 1; i >= 0; i--) {
+        const f = floatingScores[i];
+        f.y -= 0.7;
+        f.life--;
+        if (f.life <= 0) floatingScores.splice(i, 1);
+      }
+    }
+
+    // ---------- GAME STATE ----------
+    function startGame() {
+      state = 'PLAY';
+      paused = false;
+      score = 0;
+      gameSpeed = 2.6;
+      baseGap = 150;
+      bird.y = 280;
+      bird.vy = 0;
+      bird.rotation = 0;
+      pipes = [];
+      particles = [];
+      floatingScores = [];
+      pipeCounter = 0;
+      screenShake = 0;
+      flashAlpha = 0;
+      if (!muted) playSound('bgm');
+    }
+
+    function gameOver() {
+      if (state === 'GAMEOVER') return;
+      state = 'GAMEOVER';
+      isGameOver = true;
+      playSound('hit');
+      setTimeout(() => playSound('gameover'), 120);
+      screenShake = 12;
+      flashAlpha = 0.6;
+      if (window._bgmRef) { window._bgmRef.pause(); window._bgmRef = null; }
+      if (score > bestScore) {
+        bestScore = score;
+        localStorage.setItem('flappyBest', String(bestScore));
+      }
+    }
+
+    function restartGame() {
+      state = 'PLAY';
+      isGameOver = false;
+      score = 0;
+      gameSpeed = 2.6;
+      baseGap = 150;
+      bird.y = 280;
+      bird.vy = 0;
+      bird.rotation = 0;
+      pipes = [];
+      particles = [];
+      floatingScores = [];
+      pipeCounter = 0;
+      screenShake = 0;
+      flashAlpha = 0;
+      if (!muted) playSound('bgm');
+    }
+
+    // ---------- UI / RENDER ----------
+    function drawBackground() {
+      const bg = assets.images.background;
+      if (bg) {
+        ctx.drawImage(bg, 0, 0, W, H);
+      } else {
+        ctx.fillStyle = '#70c5ce';
+        ctx.fillRect(0, 0, W, H);
+      }
+    }
+
+    function drawPipes() {
+      const topImg = assets.images.pillarTop;
+      const bottomImg = assets.images.pillarBottom;
+      for (const p of pipes) {
+        if (topImg) {
+          ctx.drawImage(topImg, p.x, p.topHeight - 320, PIPE_W, 320);
+        } else {
+          ctx.fillStyle = '#228B22';
+          ctx.fillRect(p.x, 0, PIPE_W, p.topHeight);
+          ctx.fillStyle = '#2E7D32';
+          ctx.fillRect(p.x-6, p.topHeight-30, PIPE_W+12, 30);
+        }
+        if (bottomImg) {
+          ctx.drawImage(bottomImg, p.x, p.topHeight + baseGap, PIPE_W, 320);
+        } else {
+          ctx.fillStyle = '#228B22';
+          ctx.fillRect(p.x, p.topHeight + baseGap, PIPE_W, H - p.topHeight - baseGap);
+          ctx.fillStyle = '#2E7D32';
+          ctx.fillRect(p.x-6, p.topHeight + baseGap, PIPE_W+12, 30);
+        }
+      }
+    }
+
+    function drawBird() {
+      const bImg = assets.images.bird;
+      if (bImg) {
+        ctx.save();
+        ctx.translate(bird.x + bird.w/2, bird.y + bird.h/2);
+        ctx.rotate(bird.rotation);
+        ctx.drawImage(bImg, -bird.w/2, -bird.h/2, bird.w, bird.h);
+        ctx.restore();
+      } else {
+        ctx.save();
+        ctx.translate(bird.x + bird.w/2, bird.y + bird.h/2);
+        ctx.rotate(bird.rotation);
+        ctx.fillStyle = '#FFD700';
+        ctx.fillRect(-bird.w/2, -bird.h/2, bird.w, bird.h);
+        ctx.restore();
+      }
+    }
+
+    function drawUI() {
+      ctx.fillStyle = 'white';
+      ctx.font = 'bold 22px system-ui, sans-serif';
+      ctx.shadowColor = 'rgba(0,0,0,0.5)';
+      ctx.shadowBlur = 8;
+      ctx.fillText('🕊️ ' + score, 20, 50);
+      ctx.fillText('🏆 ' + bestScore, W - 110, 50);
+      ctx.shadowBlur = 0;
+
+      // mute button
+      ctx.font = '28px sans-serif';
+      ctx.fillStyle = muted ? '#aaa' : 'white';
+      ctx.fillText(muted ? '🔇' : '🔊', W - 48, 48);
+    }
+
+    function drawStartScreen() {
+      ctx.fillStyle = 'rgba(0,0,0,0.25)';
+      ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = 'white';
+      ctx.font = 'bold 42px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.shadowColor = 'black';
+      ctx.shadowBlur = 12;
+      ctx.fillText('🐦 FLAPPY', W/2, 180);
+      ctx.font = '24px system-ui';
+      ctx.fillText('⬇️ Tap to start', W/2, 300);
+      ctx.shadowBlur = 0;
+      // draw small bird
+      const bImg = assets.images.bird;
+      if (bImg) {
+        ctx.drawImage(bImg, W/2-25, 380, 50, 38);
+      }
+    }
+
+    function drawGameOver() {
+      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      ctx.fillRect(0, 0, W, H);
+      ctx.textAlign = 'center';
+      ctx.shadowColor = 'black';
+      ctx.shadowBlur = 16;
+      ctx.fillStyle = '#ff4d4d';
+      ctx.font = 'bold 44px system-ui';
+      ctx.fillText('💀 GAME OVER', W/2, 170);
+
+      ctx.fillStyle = 'white';
+      ctx.font = '28px system-ui';
+      ctx.fillText('Score: ' + score, W/2, 260);
+      ctx.fillText('Best: ' + bestScore, W/2, 310);
+
+      // restart image
+      const rImg = assets.images.restart;
+      if (rImg) {
+        ctx.drawImage(rImg, W/2-32, 360, 64, 64);
+      } else {
+        ctx.fillStyle = '#ffcc00';
+        ctx.font = '40px sans-serif';
+        ctx.fillText('↻', W/2, 410);
+      }
+      ctx.shadowBlur = 0;
+      ctx.font = '18px system-ui';
+      ctx.fillStyle = '#ddd';
+      ctx.fillText('tap or Enter to restart', W/2, 480);
+    }
+
+    function render() {
+      ctx.save();
+      // screen shake
+      if (screenShake > 0) {
+        const shake = Math.random() * screenShake * 1.2;
+        ctx.translate(shake * (Math.random()>0.5?1:-1), shake * (Math.random()>0.5?1:-1));
+        screenShake *= 0.9;
+        if (screenShake < 0.2) screenShake = 0;
+      }
+
+      drawBackground();
+      drawPipes();
+      drawBird();
+
+      // particles
+      for (const p of particles) {
+        ctx.globalAlpha = p.life / 40;
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size, 0, Math.PI*2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+      // floating score
+      for (const f of floatingScores) {
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 22px system-ui';
+        ctx.globalAlpha = f.life / 40;
+        ctx.fillText('+1', f.x, f.y);
+      }
+      ctx.globalAlpha = 1;
+
+      drawUI();
+
+      // flash
+      if (flashAlpha > 0.01) {
+        ctx.fillStyle = `rgba(255,255,255,${flashAlpha})`;
+        ctx.fillRect(0, 0, W, H);
+        flashAlpha *= 0.88;
+      }
+
+      if (state === 'START') drawStartScreen();
+      if (state === 'GAMEOVER') drawGameOver();
+
+      if (paused && state === 'PLAY') {
+        ctx.fillStyle = 'rgba(0,0,0,0.3)';
+        ctx.fillRect(0, 0, W, H);
+        ctx.fillStyle = 'white';
+        ctx.font = '34px system-ui';
+        ctx.textAlign = 'center';
+        ctx.fillText('⏸ PAUSED', W/2, H/2);
+      }
+
+      ctx.restore();
+    }
+
+    // ---------- GAME LOOP ----------
+    function update() {
+      if (state === 'PLAY' && !paused) {
+        updateBird();
+        updatePipes();
+        updateParticles();
+        // spawn particle on score (handled in updatePipes)
+      } else if (state === 'START') {
+        // animated bird
+        bird.y += Math.sin(frame * 0.05) * 0.3;
+      }
+      frame++;
+    }
+
+    function gameLoop() {
+      update();
+      render();
+      requestAnimationFrame(gameLoop);
+    }
+
+    // ---------- START ----------
+    loadAssets();
+
+    // fallback if assets never load
+    setTimeout(() => {
+      if (state === 'LOADING') {
+        state = 'START';
+        console.warn('Assets timeout, starting anyway');
+      }
+    }, 6000);
+
+    gameLoop();
+
+    // expose for debugging
+    window.toggleMute = toggleMute;
+  })();
+</script>
+</body>
+</html>
