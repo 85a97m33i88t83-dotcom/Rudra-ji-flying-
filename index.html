@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Flappy Bird · clone</title>
+  <title>Flappy Bird · Clone</title>
   <style>
     * {
       margin: 0;
@@ -13,7 +13,7 @@
       -webkit-tap-highlight-color: transparent;
     }
     body {
-      background: #2d2d2d;
+      background: #1a1a2e;
       display: flex;
       justify-content: center;
       align-items: center;
@@ -22,10 +22,10 @@
       touch-action: manipulation;
     }
     .game-wrapper {
-      background: #1a1a2e;
+      background: #16213e;
       border-radius: 28px;
       padding: 12px;
-      box-shadow: 0 20px 30px rgba(0,0,0,0.6);
+      box-shadow: 0 20px 30px rgba(0,0,0,0.7);
     }
     canvas {
       display: block;
@@ -37,17 +37,7 @@
       box-shadow: inset 0 0 0 2px #3e6b7a;
       touch-action: none;
       cursor: pointer;
-      image-rendering: crisp-edges; 
-    }
-    .sr-only {
-      position: absolute;
-      width: 1px;
-      height: 1px;
-      padding: 0;
-      margin: -1px;
-      overflow: hidden;
-      clip: rect(0,0,0,0);
-      border: 0;
+      image-rendering: crisp-edges;
     }
     @media (max-width: 480px) {
       .game-wrapper { padding: 6px; border-radius: 18px; }
@@ -61,13 +51,12 @@
 
 <script>
   (function() {
-    // ---------- GAME VARIABLES ----------
     const canvas = document.getElementById('gameCanvas');
     const ctx = canvas.getContext('2d');
     const W = 400, H = 600;
 
-    // Game state
-    let state = 'LOADING'; // LOADING, START, PLAY, GAMEOVER
+    // ---------- GAME STATE ----------
+    let state = 'LOADING'; // LOADING, MENU, PLAY, GAMEOVER, CUSTOMIZE
     let score = 0;
     let bestScore = parseInt(localStorage.getItem('flappyBest') || '0', 10);
     let gameSpeed = 2.6;
@@ -78,50 +67,61 @@
     let particles = [];
     let floatingScores = [];
 
-    // Bird (made bigger)
+    // Bird skin
+    let currentSkin = 0;
+    let selectedSkin = 0;
+
+    // Bird
     const bird = {
-      x: 70, y: 280, w: 44, h: 34,   // increased from 34x26
+      x: 70, y: 280, w: 44, h: 34,
       vy: 0, gravity: 0.25, jumpPower: -5.2,
-      rotation: 0, frame: 0,
-      flapTimer: 0
+      rotation: 0
     };
 
     // Pipes
     let pipes = [];
-    const PIPE_W = 52;               // slightly wider
+    const PIPE_W = 52;
     const PIPE_SPAWN_INTERVAL = 100;
     let pipeCounter = 0;
 
-    // Audio & assets
+    // Assets
     const assets = {
       images: {},
       sounds: {}
     };
     let assetsLoaded = 0;
-    const totalAssets = 10; // 5 images + 5 sounds (bgm, wing, score, hit, gameover)
+    const totalAssets = 16;
 
-    // UI flags
+    // UI
     let muted = false;
     let paused = false;
     let isGameOver = false;
-    let startTrigger = false;
 
     // ---------- ASSET LOADER ----------
     function loadAssets() {
-      // Updated: background.jpg, all sounds .mp3
       const imageMap = {
-        background: 'assets/background.jpg',   // now jpg
+        background: 'assets/background.jpg',
         bird: 'assets/bird.png',
+        bird1: 'assets/bird-1.png',
+        bird2: 'assets/bird-2.png',
+        bird3: 'assets/bird-3.png',
+        bird4: 'assets/bird-4.png',
+        bird5: 'assets/bird-5.png',
+        bird6: 'assets/bird-6.png',
+        bird7: 'assets/bird-7.png',
+        bird8: 'assets/bird-8.png',
+        bird9: 'assets/bird-9.png',
+        bird10: 'assets/bird-10.png',
         pillarTop: 'assets/pillar-top.png',
         pillarBottom: 'assets/pillar-bottom.png',
         restart: 'assets/restart.png'
       };
       const soundMap = {
         bgm: 'assets/bgm.mp3',
-        wing: 'assets/wing.mp3',      // now mp3
-        score: 'assets/score.mp3',    // now mp3
-        hit: 'assets/hit.mp3',        // now mp3
-        gameover: 'assets/gameover.mp3' // now mp3
+        wing: 'assets/wing.mp3',
+        score: 'assets/score.mp3',
+        hit: 'assets/hit.mp3',
+        gameover: 'assets/gameover.mp3'
       };
 
       let loaded = 0;
@@ -129,13 +129,11 @@
         loaded++;
         assetsLoaded = loaded;
         if (loaded === totalAssets) {
-          state = 'START';
-          // pre-warm audio
+          state = 'MENU';
           Object.values(assets.sounds).forEach(s => s && s.load && s.load());
         }
       }
 
-      // Images
       for (const [key, src] of Object.entries(imageMap)) {
         const img = new Image();
         img.onload = () => { assets.images[key] = img; onLoad(); };
@@ -143,7 +141,6 @@
         img.src = src;
       }
 
-      // Sounds (all mp3)
       for (const [key, src] of Object.entries(soundMap)) {
         const audio = new Audio(src);
         audio.preload = 'auto';
@@ -180,26 +177,93 @@
     }
 
     // ---------- INPUT SYSTEM ----------
+    function getCanvasCoords(e) {
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = W / rect.width;
+      const scaleY = H / rect.height;
+      let clientX, clientY;
+      
+      if (e.touches) {
+        clientX = e.touches[0].clientX;
+        clientY = e.touches[0].clientY;
+      } else {
+        clientX = e.clientX;
+        clientY = e.clientY;
+      }
+      
+      return {
+        x: (clientX - rect.left) * scaleX,
+        y: (clientY - rect.top) * scaleY
+      };
+    }
+
     function handleTap(e) {
       if (e) e.preventDefault();
       if (state === 'LOADING') return;
+      
+      const coords = getCanvasCoords(e);
+      const x = coords.x;
+      const y = coords.y;
+      
+      if (state === 'MENU') {
+        // Customize button
+        if (x > 140 && x < 260 && y > 250 && y < 310) {
+          state = 'CUSTOMIZE';
+          selectedSkin = currentSkin;
+          return;
+        }
+        // Play button
+        if (x > 140 && x < 260 && y > 330 && y < 390) {
+          startGame();
+          return;
+        }
+        return;
+      }
+
+      if (state === 'CUSTOMIZE') {
+        // Done button
+        if (x > 140 && x < 260 && y > 500 && y < 560) {
+          currentSkin = selectedSkin;
+          state = 'MENU';
+          return;
+        }
+        
+        // Skin selection (grid)
+        if (x > 20 && x < 380 && y > 100 && y < 480) {
+          const col = Math.floor((x - 30) / 75);
+          const row = Math.floor((y - 120) / 75);
+          const idx = row * 4 + col;
+          if (idx >= 0 && idx <= 10) {
+            selectedSkin = idx;
+          }
+        }
+        return;
+      }
+
       if (state === 'GAMEOVER') {
         restartGame();
         return;
       }
-      if (state === 'START') {
-        startGame();
-        return;
-      }
+      
       if (state === 'PLAY' && !paused) {
         flapBird();
       }
     }
 
+    // Event listeners
+    canvas.addEventListener('click', handleTap);
+    canvas.addEventListener('touchstart', handleTap, { passive: false });
+
     document.addEventListener('keydown', (e) => {
       if (e.key === ' ' || e.key === 'Space') {
         e.preventDefault();
-        handleTap(e);
+        if (state === 'MENU') {
+          startGame();
+        } else if (state === 'GAMEOVER') {
+          restartGame();
+        } else if (state === 'PLAY' && !paused) {
+          flapBird();
+        }
       }
       if (e.key === 'Enter' && state === 'GAMEOVER') {
         e.preventDefault();
@@ -209,15 +273,12 @@
         if (state === 'PLAY') paused = !paused;
       }
       if (e.key === 'm' || e.key === 'M') toggleMute();
+      if (e.key === 'Escape' && state === 'CUSTOMIZE') {
+        state = 'MENU';
+      }
     });
 
-    canvas.addEventListener('click', handleTap);
-    canvas.addEventListener('touchstart', (e) => {
-      e.preventDefault();
-      handleTap(e);
-    }, { passive: false });
-
-    // ---------- PHYSICS & BIRD ----------
+    // ---------- PHYSICS ----------
     function flapBird() {
       bird.vy = bird.jumpPower;
       bird.rotation = -25 * Math.PI / 180;
@@ -276,7 +337,6 @@
           }
         }
 
-        // collision box (bird is bigger, adjust collision box)
         const birdBox = {
           x: bird.x + 6, y: bird.y + 6,
           w: bird.w - 12, h: bird.h - 12
@@ -300,20 +360,7 @@
              a.y < b.y + b.h && a.y + a.h > b.y;
     }
 
-    // ---------- PARTICLES & FLOATING SCORE ----------
-    function spawnParticles(x, y) {
-      for (let i = 0; i < 12; i++) {
-        particles.push({
-          x, y,
-          vx: (Math.random() - 0.5) * 5,
-          vy: (Math.random() - 0.5) * 5 - 1,
-          life: 30 + Math.random() * 20,
-          size: 3 + Math.random() * 4,
-          color: `hsl(${40 + Math.random()*30}, 70%, 60%)`
-        });
-      }
-    }
-
+    // ---------- PARTICLES ----------
     function updateParticles() {
       for (let i = particles.length - 1; i >= 0; i--) {
         const p = particles[i];
@@ -383,7 +430,13 @@
       if (!muted) playSound('bgm');
     }
 
-    // ---------- UI / RENDER ----------
+    // ---------- RENDER ----------
+    function getBirdImage() {
+      if (currentSkin === 0) return assets.images.bird;
+      const key = 'bird' + currentSkin;
+      return assets.images[key] || assets.images.bird;
+    }
+
     function drawBackground() {
       const bg = assets.images.background;
       if (bg) {
@@ -398,10 +451,7 @@
       const topImg = assets.images.pillarTop;
       const bottomImg = assets.images.pillarBottom;
       for (const p of pipes) {
-        // draw top pipe: image height is 320, we need to draw it so bottom aligns with topHeight
         if (topImg) {
-          // Draw the top pipe image with its bottom at p.topHeight
-          // The image is drawn from (p.x, p.topHeight - 320) to (p.x + PIPE_W, p.topHeight)
           ctx.drawImage(topImg, p.x, p.topHeight - 320, PIPE_W, 320);
         } else {
           ctx.fillStyle = '#228B22';
@@ -409,7 +459,6 @@
           ctx.fillStyle = '#2E7D32';
           ctx.fillRect(p.x-6, p.topHeight-30, PIPE_W+12, 30);
         }
-        // bottom pipe: image drawn from (p.x, p.topHeight + baseGap) downwards
         if (bottomImg) {
           ctx.drawImage(bottomImg, p.x, p.topHeight + baseGap, PIPE_W, 320);
         } else {
@@ -422,7 +471,7 @@
     }
 
     function drawBird() {
-      const bImg = assets.images.bird;
+      const bImg = getBirdImage();
       if (bImg) {
         ctx.save();
         ctx.translate(bird.x + bird.w/2, bird.y + bird.h/2);
@@ -453,22 +502,108 @@
       ctx.fillText(muted ? '🔇' : '🔊', W - 48, 48);
     }
 
-    function drawStartScreen() {
-      ctx.fillStyle = 'rgba(0,0,0,0.25)';
+    function drawMenu() {
+      ctx.fillStyle = 'rgba(0,0,0,0.35)';
       ctx.fillRect(0, 0, W, H);
-      ctx.fillStyle = 'white';
-      ctx.font = 'bold 42px system-ui, sans-serif';
+      
       ctx.textAlign = 'center';
       ctx.shadowColor = 'black';
-      ctx.shadowBlur = 12;
-      ctx.fillText('🐦 FLAPPY', W/2, 180);
+      ctx.shadowBlur = 16;
+      
+      ctx.fillStyle = '#FFD700';
+      ctx.font = 'bold 52px system-ui, sans-serif';
+      ctx.fillText('🐦 FLAPPY', W/2, 140);
+      ctx.fillStyle = 'white';
       ctx.font = '24px system-ui';
-      ctx.fillText('⬇️ Tap to start', W/2, 300);
+      ctx.fillText('BIRD', W/2, 185);
+
+      ctx.shadowBlur = 8;
+      
+      // Customize button
+      ctx.fillStyle = '#2196F3';
+      ctx.fillRect(140, 250, 120, 60);
+      ctx.fillStyle = 'white';
+      ctx.font = 'bold 24px system-ui';
+      ctx.fillText('🎨 CUSTOM', W/2, 292);
+
+      // Play button
+      ctx.fillStyle = '#4CAF50';
+      ctx.fillRect(140, 330, 120, 60);
+      ctx.fillStyle = 'white';
+      ctx.font = 'bold 28px system-ui';
+      ctx.fillText('▶ PLAY', W/2, 372);
+
       ctx.shadowBlur = 0;
-      const bImg = assets.images.bird;
+      ctx.fillStyle = '#ddd';
+      ctx.font = '20px system-ui';
+      ctx.fillText('Best: ' + bestScore, W/2, 460);
+      ctx.fillStyle = '#aaa';
+      ctx.font = '16px system-ui';
+      ctx.fillText('Tap or press Space', W/2, 520);
+
+      const bImg = getBirdImage();
       if (bImg) {
-        ctx.drawImage(bImg, W/2-32, 380, 64, 48); // bigger on start screen
+        ctx.drawImage(bImg, W/2-22, 560, 44, 34);
       }
+    }
+
+    function drawCustomize() {
+      ctx.fillStyle = 'rgba(0,0,0,0.88)';
+      ctx.fillRect(0, 0, W, H);
+      
+      ctx.textAlign = 'center';
+      ctx.fillStyle = 'white';
+      ctx.font = 'bold 28px system-ui';
+      ctx.fillText('🎨 Choose Bird Skin', W/2, 55);
+      
+      ctx.fillStyle = '#888';
+      ctx.font = '16px system-ui';
+      ctx.fillText('Tap a bird to select, then tap DONE', W/2, 85);
+
+      const cols = 4;
+      const size = 60;
+      const gap = 12;
+      const startX = 30;
+      const startY = 120;
+
+      for (let i = 0; i <= 10; i++) {
+        const col = i % cols;
+        const row = Math.floor(i / cols);
+        const x = startX + col * (size + gap);
+        const y = startY + row * (size + gap + 12);
+        
+        const isSelected = (i === selectedSkin);
+        ctx.fillStyle = isSelected ? '#4CAF50' : '#333';
+        ctx.shadowBlur = isSelected ? 20 : 0;
+        ctx.shadowColor = '#4CAF50';
+        ctx.fillRect(x, y, size, size);
+        ctx.shadowBlur = 0;
+        ctx.strokeStyle = isSelected ? '#FFD700' : '#555';
+        ctx.lineWidth = 3;
+        ctx.strokeRect(x, y, size, size);
+
+        let img;
+        if (i === 0) img = assets.images.bird;
+        else img = assets.images['bird' + i];
+        if (img && img.complete && img.naturalWidth > 0) {
+          ctx.drawImage(img, x + 8, y + 8, size - 16, size - 16);
+        } else {
+          ctx.fillStyle = '#FFD700';
+          ctx.font = '30px sans-serif';
+          ctx.fillText('🐦', x + 15, y + 45);
+        }
+        
+        ctx.fillStyle = '#ccc';
+        ctx.font = '11px system-ui';
+        ctx.fillText('#' + i, x + size/2, y + size + 16);
+      }
+
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = '#4CAF50';
+      ctx.fillRect(140, 500, 120, 50);
+      ctx.fillStyle = 'white';
+      ctx.font = 'bold 24px system-ui';
+      ctx.fillText('✅ DONE', W/2, 536);
     }
 
     function drawGameOver() {
@@ -510,44 +645,47 @@
       }
 
       drawBackground();
-      drawPipes();
-      drawBird();
+      
+      if (state === 'PLAY' || state === 'GAMEOVER') {
+        drawPipes();
+        drawBird();
+        
+        for (const p of particles) {
+          ctx.globalAlpha = p.life / 40;
+          ctx.fillStyle = p.color;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, p.size, 0, Math.PI*2);
+          ctx.fill();
+        }
+        ctx.globalAlpha = 1;
+        for (const f of floatingScores) {
+          ctx.fillStyle = '#fff';
+          ctx.font = 'bold 22px system-ui';
+          ctx.globalAlpha = f.life / 40;
+          ctx.fillText('+1', f.x, f.y);
+        }
+        ctx.globalAlpha = 1;
+        drawUI();
 
-      for (const p of particles) {
-        ctx.globalAlpha = p.life / 40;
-        ctx.fillStyle = p.color;
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, p.size, 0, Math.PI*2);
-        ctx.fill();
+        if (flashAlpha > 0.01) {
+          ctx.fillStyle = `rgba(255,255,255,${flashAlpha})`;
+          ctx.fillRect(0, 0, W, H);
+          flashAlpha *= 0.88;
+        }
+
+        if (paused && state === 'PLAY') {
+          ctx.fillStyle = 'rgba(0,0,0,0.3)';
+          ctx.fillRect(0, 0, W, H);
+          ctx.fillStyle = 'white';
+          ctx.font = '34px system-ui';
+          ctx.textAlign = 'center';
+          ctx.fillText('⏸ PAUSED', W/2, H/2);
+        }
       }
-      ctx.globalAlpha = 1;
-      for (const f of floatingScores) {
-        ctx.fillStyle = '#fff';
-        ctx.font = 'bold 22px system-ui';
-        ctx.globalAlpha = f.life / 40;
-        ctx.fillText('+1', f.x, f.y);
-      }
-      ctx.globalAlpha = 1;
 
-      drawUI();
-
-      if (flashAlpha > 0.01) {
-        ctx.fillStyle = `rgba(255,255,255,${flashAlpha})`;
-        ctx.fillRect(0, 0, W, H);
-        flashAlpha *= 0.88;
-      }
-
-      if (state === 'START') drawStartScreen();
+      if (state === 'MENU') drawMenu();
+      if (state === 'CUSTOMIZE') drawCustomize();
       if (state === 'GAMEOVER') drawGameOver();
-
-      if (paused && state === 'PLAY') {
-        ctx.fillStyle = 'rgba(0,0,0,0.3)';
-        ctx.fillRect(0, 0, W, H);
-        ctx.fillStyle = 'white';
-        ctx.font = '34px system-ui';
-        ctx.textAlign = 'center';
-        ctx.fillText('⏸ PAUSED', W/2, H/2);
-      }
 
       ctx.restore();
     }
@@ -558,7 +696,7 @@
         updateBird();
         updatePipes();
         updateParticles();
-      } else if (state === 'START') {
+      } else if (state === 'MENU') {
         bird.y += Math.sin(frame * 0.05) * 0.3;
       }
       frame++;
@@ -575,7 +713,7 @@
 
     setTimeout(() => {
       if (state === 'LOADING') {
-        state = 'START';
+        state = 'MENU';
         console.warn('Assets timeout, starting anyway');
       }
     }, 6000);
